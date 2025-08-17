@@ -7,6 +7,7 @@ This file provides custom instructions for GitHub Copilot in this repository.
 - Prefer using the `reqwest` crate for HTTP requests.
 - Follow Rust 2024 edition best practices.
 - Add comments to all public functions.
+- API description: https://leanpub.com/help/api
 
 ## Project description
 

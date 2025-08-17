@@ -17,9 +17,9 @@ use anyhow::{Context, Result};
 struct Cli {
     /// Book slug (the part after https://leanpub.com/ in the URL)
     slug: String,
-    /// Use the legacy /json endpoint instead of metadata
+    /// Print debugging info (status, headers, raw body snippet) on failures
     #[arg(long)]
-    legacy: bool,
+    debug: bool,
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -30,6 +30,7 @@ async fn main() {
     }
 }
 
+/// Program entry after argument parsing.
 async fn real_main() -> Result<()> {
     // Load .env file if present (ignores if missing)
     let _ = dotenv();
@@ -41,41 +42,39 @@ async fn real_main() -> Result<()> {
 
     let client = Client::new();
 
-    // Two possible endpoints: legacy public JSON, and authenticated API (example placeholder)
-    // Public: https://leanpub.com/<slug>.json  (no api_key)
-    // Auth (example for book metadata): https://leanpub.com/<slug>/book_metadata.json?api_key=...
-    // If 404 on one, we can try the other.
-    let mut tried = Vec::new();
+    let url = format!("https://leanpub.com/{}.json?api_key={}", slug, api_key);
+    let json = fetch_book(&client, &url, cli.debug).await?;
+    println!("{}", serde_json::to_string_pretty(&json)?);
+    Ok(())
+}
 
-    let endpoints = if cli.legacy {
-        vec![format!("https://leanpub.com/{}.json", slug)]
-    } else {
-        vec![
-            format!("https://leanpub.com/{}/book_metadata.json?api_key={}", slug, api_key),
-            format!("https://leanpub.com/{}.json", slug),
-        ]
-    };
+/// Fetch the Leanpub book configuration JSON from the endpoint
+async fn fetch_book(client: &Client, url: &str, debug: bool) -> Result<serde_json::Value> {
+    let resp = client
+        .get(url)
+        .header("Accept", "application/json")
+        .send()
+        .await
+        .with_context(|| format!("sending request to {url}"))?;
 
-    for url in endpoints {
-        let resp = client.get(&url).send().await;
-        match resp {
-            Ok(r) => {
-                let status = r.status();
-                if status.is_success() {
-                    let bytes = r.bytes().await.context("reading response body")?;
-                    let json: serde_json::Value = serde_json::from_slice(&bytes)
-                        .context("parsing JSON")?;
-                    println!("{}", serde_json::to_string_pretty(&json)?);
-                    return Ok(());
-                } else {
-                    tried.push(format!("{} => {}", url, status));
-                }
-            }
-            Err(err) => {
-                tried.push(format!("{} => request error: {}", url, err));
-            }
+    let status = resp.status();
+    let headers_debug = if debug { Some(format!("{:?}", resp.headers())) } else { None };
+    let bytes = resp.bytes().await.context("reading response body")?;
+
+    if !status.is_success() {
+        let mut msg = format!("request to {url} failed with {status}");
+        if debug {
+            let snippet = String::from_utf8_lossy(&bytes)
+                .chars()
+                .take(200)
+                .collect::<String>();
+            msg.push_str(&format!(" | body snippet: {:?}", snippet));
+            if let Some(h) = headers_debug { msg.push_str(&format!(" | headers: {h}")); }
         }
+        anyhow::bail!(msg);
     }
 
-    anyhow::bail!("All endpoints failed:\n{}", tried.join("\n"));
+    let json: serde_json::Value = serde_json::from_slice(&bytes)
+        .with_context(|| format!("parsing JSON from {url}"))?;
+    Ok(json)
 }
